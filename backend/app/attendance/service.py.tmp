@@ -1,0 +1,110 @@
+    @staticmethod
+    async def get_analytics(
+        db: AsyncSession, 
+        employee_id: Optional[uuid.UUID] = None,
+        training_id: Optional[uuid.UUID] = None
+    ) -> dict:
+        """Get attendance analytics summary."""
+        stmt = select(AttendanceRecord)
+        
+        if employee_id:
+            stmt = stmt.where(AttendanceRecord.employee_id == employee_id)
+        if training_id:
+            stmt = stmt.where(AttendanceRecord.training_id == training_id)
+            
+        result = await db.execute(stmt)
+        results = result.scalars().all()
+        
+        total = len(results)
+        if total == 0:
+            return {
+                "total_records": 0,
+                "present_count": 0,
+                "late_count": 0,
+                "absent_count": 0,
+                "active_sessions_count": 0,
+                "attendance_percentage": 0,
+                "late_percentage": 0,
+                "completion_data": [],
+                "trend_data": [],
+                "recent_activity": []
+            }
+            
+        present = len([r for r in results if r.status == AttendanceStatus.PRESENT])
+        late = len([r for r in results if r.status == AttendanceStatus.LATE])
+        absent = len([r for r in results if r.status == AttendanceStatus.ABSENT])
+        
+        # Active Sessions Count
+        active_sessions_stmt = select(func.count(AttendanceSession.id)).where(
+            and_(
+                AttendanceSession.opens_at <= datetime.now(),
+                AttendanceSession.closes_at >= datetime.now()
+            )
+        )
+        active_sessions_count = (await db.execute(active_sessions_stmt)).scalar() or 0
+
+        # Completion Data for Donut Chart
+        completion_data = [
+            {"name": "Present", "value": present},
+            {"name": "Late", "value": late},
+            {"name": "Absent", "value": absent}
+        ]
+
+        # Trend Data (last 7 training sessions)
+        trend_stmt = (
+            select(
+                Training.title,
+                func.count(AttendanceRecord.id).label("total"),
+                func.sum(case((or_(AttendanceRecord.status == AttendanceStatus.PRESENT, AttendanceRecord.status == AttendanceRecord.LATE), 1), else_=0)).label("present")
+            )
+            .join(AttendanceRecord)
+            .group_by(Training.id)
+            .order_by(Training.start_date.desc())
+            .limit(7)
+        )
+        
+        if employee_id:
+            trend_stmt = trend_stmt.where(AttendanceRecord.employee_id == employee_id)
+            
+        trend_result = await db.execute(trend_stmt)
+        trend_data = [
+            {
+                "label": row.title[:10] + "...", 
+                "rate": round((row.present / row.total) * 100, 1) if row.total > 0 else 0
+            }
+            for row in reversed(trend_result.all())
+        ]
+
+        # Recent Activity
+        activity_stmt = (
+            select(AttendanceRecord)
+            .options(selectinload(AttendanceRecord.employee), selectinload(AttendanceRecord.training))
+            .order_by(AttendanceRecord.marked_at.desc())
+            .limit(5)
+        )
+        if employee_id:
+            activity_stmt = activity_stmt.where(AttendanceRecord.employee_id == employee_id)
+            
+        activity_result = await db.execute(activity_stmt)
+        recent_activity = [
+            {
+                "user": f"{row.employee.first_name} {row.employee.last_name}" if row.employee else "Unknown",
+                "training": row.training.title if row.training else "Unknown",
+                "status": row.status,
+                "time": row.marked_at.isoformat() if row.marked_at else None
+            }
+            for row in activity_result.scalars().all()
+        ]
+
+        return {
+            "total_records": total,
+            "present_count": present,
+            "late_count": late,
+            "absent_count": absent,
+            "active_sessions_count": active_sessions_count,
+            "attendance_percentage": round(((present + late) / total) * 100, 2),
+            "late_percentage": round((late / total) * 100, 2),
+            "completion_data": completion_data,
+            "trend_data": trend_data,
+            "recent_activity": recent_activity
+        }

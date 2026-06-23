@@ -1,0 +1,98 @@
+services:
+  # FastAPI Web Service
+  - type: web
+    name: training-platform-backend
+    env: docker
+    dockerContext: backend
+    dockerfilePath: backend/Dockerfile
+    plan: free
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: training-platform-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: training-platform-redis
+          type: redis
+          property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          name: training-platform-redis
+          type: redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          name: training-platform-redis
+          type: redis
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: PROJECT_NAME
+        value: "Training Management Platform"
+      - key: VERSION
+        value: "1.0.0"
+      - key: DEBUG
+        value: "false"
+
+  # Celery Background Worker
+  - type: worker
+    name: training-platform-worker
+    env: docker
+    dockerContext: backend
+    dockerfilePath: backend/Dockerfile
+    plan: free
+    dockerCommand: celery -A app.services.celery_app worker --loglevel=info
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: training-platform-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: training-platform-redis
+          type: redis
+          property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          name: training-platform-redis
+          type: redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          name: training-platform-redis
+          type: redis
+          property: connectionString
+      - key: SECRET_KEY
+        fromService:
+          name: training-platform-backend
+          envVarKey: SECRET_KEY
+
+  # React Frontend (Static Site)
+  - type: web
+    name: training-platform-frontend
+    env: static
+    plan: free
+    buildCommand: npm run build
+    publishDir: dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_API_URL
+        fromService:
+          name: training-platform-backend
+          property: url
+
+  # Redis Service
+  - type: redis
+    name: training-platform-redis
+    plan: free
+    ipAllowList: []
+
+databases:
+  - name: training-platform-db
+    plan: free
+    databaseName: training_db
+    user: postgres

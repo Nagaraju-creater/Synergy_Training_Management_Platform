@@ -1,0 +1,799 @@
+Created At: 2026-06-13T08:51:48Z
+Completed At: 2026-06-13T08:51:48Z
+File Path: `file:///c:/Users/sgsqa4/.gemini/antigravity/training-platform/backend/app/analytics/team_analytics_service.py`
+Total Lines: 791
+Total Bytes: 37313
+Showing lines 1 to 791
+The following code has been modified to include a line number before every line, in the format: <line_number>: <original_line>. Please note that any changes targeting the original code should remove the line number, colon, and leading space.
+1: from datetime import date, datetime, timedelta
+2: from typing import List, Optional
+3: import io
+4: import uuid
+5: from sqlalchemy import func, select, and_, or_, cast, String, case
+6: from sqlalchemy.ext.asyncio import AsyncSession
+7: from sqlalchemy.orm import selectinload
+8: 
+9: from app.analytics.team_analytics_schemas import (
+10:     TeamKPIs, DeptLearningHours, MonthlyLearningTrend,
+11:     CourseParticipation, SkillGapItem, EffectivenessScore,
+12:     DepartmentSummary, EmployeeAnalyticsRow, TopLearner,
+13:     TeamAnalyticsDashboard,
+14: )
+15: from app.employees.models import Employee
+16: from app.enrollments.models import Enrollment, EnrollmentStatus
+17: from app.trainings.models import Training, TrainingStatus
+18: from app.trainings.categories import TrainingCategory
+19: from app.departments.models import Department
+20: from app.effectiveness.models import Effectiveness, EffectivenessStatus
+21: from app.nominations.models import Nomination
+22: from app.attendance.models import AttendanceRecord, AttendanceStatus
+23: from app.attendance.service import AttendanceService
+24: 
+25: 
+26: class TeamAnalyticsService:
+27:     LEARNING_TARGET_HOURS = 16.0
+28: 
+29:     @staticmethod
+30:     def financial_year_bounds(financial_year: Optional[str] = None) -> tuple[date, date, str]:
+31:         if financial_year:
+32:             try:
+33:                 start_year = int(financial_year.split("-")[0])
+34:             except (ValueError, TypeError):
+35:                 start_year = date.today().year if date.today().month >= 4 else date.today().year - 1
+36:         else:
+37:             start_year = date.today().year if date.today().month >= 4 else date.today().year - 1
+38:         return date(start_year, 4, 1), date(start_year + 1, 3, 31), f"{start_year}-{start_year + 1}"
+39: 
+40:     @staticmethod
+41:     def compliance_status(kpi_pct: float) -> str:
+42:         if kpi_pct >= 100:
+43:             return "Achieved"
+44:         if kpi_pct >= 75:
+45:             return "Good"
+46:         if kpi_pct >= 50:
+47:             return "Moderate"
+48:         if kpi_pct >= 25:
+49:             return "Low"
+50:         return "Critical"
+51: 
+52:     @staticmethod
+53:     def fy_months(fy_start: date) -> list[tuple[int, int, str]]:
+54:         months = []
+55:         for offset in range(12):
+56:             month = ((fy_start.month + offset - 1) % 12) + 1
+57:             year = fy_start.year + ((fy_start.month + offset - 1) // 12)
+58:             months.append((year, month, date(year, month, 1).strftime("%B")))
+59:         return months
+60: 
+61:     @staticmethod
+62:     def parse_uuid(value: Optional[str]):
+63:         if not value:
+64:             return None
+65:         try:
+66:             return uuid.UUID(str(value))
+67:         except (ValueError, TypeError):
+68:             return None
+69: 
+70:     @staticmethod
+71:     async def generate_kpi_excel(
+72:         db: AsyncSession,
+73:         financial_year: Optional[str] = None,
+74:         month: Optional[int] = None,
+75:         department_id: Optional[str] = None,
+76:         employee_id: Optional[str] = None,
+77:         manager_id: Optional[str] = None,
+78:         training_id: Optional[str] = None,
+79:         training_category_id: Optional[str] = None,
+80:         attendance_status: Optional[str] = None,
+81:         start_date: Optional[date] = None,
+82:         end_date: Optional[date] = None,
+83:     ) -> bytes:
+84:         import openpyxl
+85:         from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+86:         from openpyxl.utils import get_column_letter
+87: 
+88:         fy_start, fy_end, fy_label = TeamAnalyticsService.financial_year_bounds(financial_year)
+89:         range_start = start_date or fy_start
+90:         range_end = end_date or fy_end
+91:         months = TeamAnalyticsService.fy_months(fy_start)
+92:         if month:
+93:             months = [m for m in months if m[1] == month]
+94: 
+95:         dept_uuid = TeamAnalyticsService.parse_uuid(department_id)
+96:         emp_uuid = TeamAnalyticsService.parse_uuid(employee_id)
+97:         mgr_uuid = TeamAnalyticsService.parse_uuid(manager_id)
+98:         training_uuid = TeamAnalyticsService.parse_uuid(training_id)
+99:         category_uuid = TeamAnalyticsService.parse_uuid(training_category_id)
+100: 
+101:         # Learning KPI credit is intentionally strict: only completed trainings
+102:         # with roster attendance marked PRESENT contribute hours.
+103:         status_enum = AttendanceStatus.PRESENT
+104: 
+105:         employees_stmt = (
+106:             select(Employee)
+107:             .options(selectinload(Employee.department), selectinload(Employee.manager))
+108:             .where(Employee.deleted_at == None)
+109:             .order_by(Employee.employee_code.asc())
+110:         )
+111:         if dept_uuid:
+112:             employees_stmt = employees_stmt.where(Employee.department_id == dept_uuid)
+113:         if emp_uuid:
+114:             employees_stmt = employees_stmt.where(Employee.id == emp_uuid)
+115:         if mgr_uuid:
+116:             employees_stmt = employees_stmt.where(Employee.manager_id == mgr_uuid)
+117:         employees = (await db.execute(employees_stmt)).scalars().all()
+118:         employee_ids = [emp.id for emp in employees]
+119: 
+120:         contribution_map: dict = {emp.id: {} for emp in employees}
+121:         attendance_rows = []
+122:         if employee_ids:
+123:             stmt = (
+124:                 select(AttendanceRecord, Training, Employee)
+125:                 .join(Training, AttendanceRecord.training_id == Training.id)
+126:                 .join(Employee, AttendanceRecord.employee_id == Employee.id)
+127:                 .join(Enrollment, and_(
+128:                     Enrollment.employee_id == AttendanceRecord.employee_id,
+129:                     Enrollment.training_id == AttendanceRecord.training_id,
+130:                     Enrollment.deleted_at == None,
+131:                 ))
+132:                 .options(selectinload(Employee.department), selectinload(Employee.manager), selectinload(Training.category))
+133:                 .where(and_(
+134:                     AttendanceRecord.employee_id.in_(employee_ids),
+135:                     AttendanceRecord.status == status_enum,
+136:                     AttendanceService.roster_record_filter(),
+137:                     Enrollment.status == EnrollmentStatus.COMPLETED,
+138:                     Training.status != TrainingStatus.CANCELLED,
+139:                     Training.start_date >= range_start,
+140:                     Training.start_date <= range_end,
+141:                 ))
+142:             )
+143:             if training_uuid:
+144:                 stmt = stmt.where(Training.id == training_uuid)
+145:             if category_uuid:
+146:                 stmt = stmt.where(Training.category_id == category_uuid)
+147:             raw_rows = (await db.execute(stmt.order_by(Training.start_date.asc(), Training.title.asc()))).all()
+148:             for record, training, employee in raw_rows:
+149:                 if not training.start_date:
+150:                     continue
+151:                 key = (training.start_date.year, training.start_date.month)
+152:                 contribution = {
+153:                     "employee_id": employee.id,
+154:                     "employee_name": f"{employee.first_name} {employee.last_name}",
+155:                     "employee_code": employee.employee_code,
+156:                     "department": employee.department.name if employee.department else "Unassigned",
+157:                     "manager": f"{employee.manager.first_name} {employee.manager.last_name}" if employee.manager else "",
+158:                     "training_id": training.id,
+159:                     "training_title": training.title,
+160:                     "training_date": training.start_date,
+161:                     "hours": float(training.duration_hours or 0),
+162:                     "max_hours": float(training.max_hours_allowed or training.duration_hours or 0),
+163:                     "status": record.status.value,
+164:                     "marked_at": record.marked_at,
+165:                     "category": training.category.name if training.category else "",
+166:                 }
+167:                 contribution_map.setdefault(employee.id, {}).setdefault(key, []).append(contribution)
+168:                 attendance_rows.append(contribution)
+169: 
+170:         wb = openpyxl.Workbook()
+171:         ws = wb.active
+172:         ws.title = "Employee Learning KPI Report"
+173:         ws.freeze_panes = "E6"
+174: 
+175:         blue = "4F81BD"
+176:         deep_blue = "1F4E79"
+177:         light_blue = "D9EAF7"
+178:         green = "E2F0D9"
+179:         yellow = "FFF2CC"
+180:         red = "FCE4D6"
+181:         white = "FFFFFF"
+182:         thin = Side(style="thin", color="9EADCC")
+183:         border = Border(left=thin, right=thin, top=thin, bottom=thin)
+184: 
+185:         def style_cell(cell, fill=white, font_color="1F2937", bold=False, align="center"):
+186:             cell.fill = PatternFill("solid", fgColor=fill)
+187:             cell.font = Font(name="Calibri", size=9, bold=bold, color=font_color)
+188:             cell.alignment = Alignment(horizontal=align, vertical="center", wrap_text=True)
+189:             cell.border = border
+190: 
+191:         total_cols = 4 + len(months) * 3 + 8
+192:         ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_cols)
+193:         ws.cell(1, 1, "Department KPI Dashboard - Employee Learning KPI Report")
+194:         style_cell(ws.cell(1, 1), fill=deep_blue, font_color=white, bold=True)
+195:         ws.cell(1, 1).font = Font(name="Calibri", size=14, bold=True, color=white)
+196: 
+197:         ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=total_cols)
+198:         filter_summary = f"FY: Apr {fy_start.year} - Mar {fy_end.year} | Date Range: {range_start:%d-%b-%Y} to {range_end:%d-%b-%Y}"
+199:         if month:
+200:             filter_summary += f" | Month: {date(fy_start.year if month >= 4 else fy_end.year, month, 1):%B}"
+201:         ws.cell(2, 1, filter_summary)
+202:         style_cell(ws.cell(2, 1), fill=light_blue, bold=True, align="left")
+203: 
+204:         base_headers = ["S.No", "Employee ID", "Employee Name", "Date of Joining"]
+205:         for idx, header in enumerate(base_headers, 1):
+206:             ws.merge_cells(start_row=4, start_column=idx, end_row=5, end_column=idx)
+207:             ws.cell(4, idx, header)
+208:             style_cell(ws.cell(4, idx), fill=blue, font_color=white, bold=True)
+209: 
+210:         col = 5
+211:         for _, _, month_name in months:
+212:             ws.merge_cells(start_row=4, start_column=col, end_row=4, end_column=col + 2)
+213:             ws.cell(4, col, month_name.upper())
+214:             style_cell(ws.cell(4, col), fill=blue, font_color=white, bold=True)
+215:             for sub in ["Date", "Actual", "Max Hours"]:
+216:                 ws.cell(5, col, sub)
+217:                 style_cell(ws.cell(5, col), fill=blue, font_color=white, bold=True)
+218:                 col += 1
+219: 
+220:         final_headers = ["Total Hours", "Target Hours", "Balance", "KPI %", "Learning Compliance", "Department", "Manager", "Attendance %"]
+221:         for header in final_headers:
+222:             ws.merge_cells(start_row=4, start_column=col, end_row=5, end_column=col)
+223:             ws.cell(4, col, header)
+224:             style_cell(ws.cell(4, col), fill=blue, font_color=white, bold=True)
+225:             col += 1
+226: 
+227:         dept_stats: dict = {}
+228:         monthly_stats: dict = {(y, m): {"hours": 0.0, "employees": set(), "trainings": set()} for y, m, _ in months}
+229: 
+230:         for row_idx, emp in enumerate(employees, 6):
+231:             row_values = [
+232:                 row_idx - 5,
+233:                 emp.employee_code,
+234:                 f"{emp.first_name} {emp.last_name}",
+235:                 emp.date_of_joining.strftime("%d %m %Y") if emp.date_of_joining else "",
+236:             ]
+237:             total_hours = 0.0
+238:             total_attendance_rows = 0
+239:             for y, m, _ in months:
+240:                 entries = contribution_map.get(emp.id, {}).get((y, m), [])
+241:                 total_attendance_rows += len(entries)
+242:                 month_hours = round(sum(item["hours"] for item in entries), 2)
+243:                 max_hours = round(sum(item["max_hours"] for item in entries), 2)
+244:                 total_hours += month_hours
+245:                 dates = "\n".join(f"{item['training_date']:%d.%m.%Y} - {item['training_title']}" for item in entries)
+246:                 row_values.extend([dates, month_hours if month_hours else "", max_hours if max_hours else ""])
+247:                 if (y, m) in monthly_stats:
+248:                     monthly_stats[(y, m)]["hours"] += month_hours
+249:                     if month_hours:
+250:                         monthly_stats[(y, m)]["employees"].add(emp.id)
+251:                     for item in entries:
+252:                         monthly_stats[(y, m)]["trainings"].add(item["training_id"])
+253: 
+254:             target = TeamAnalyticsService.LEARNING_TARGET_HOURS
+255:             balance = max(target - total_hours, 0)
+256:             kpi_pct = round((total_hours / target) * 100, 1) if target else 0
+257:             department = emp.department.name if emp.department else "Unassigned"
+258:             manager = f"{emp.manager.first_name} {emp.manager.last_name}" if emp.manager else ""
+259:             attendance_pct = 100.0 if total_attendance_rows else 0.0
+260:             row_values.extend([
+261:                 round(total_hours, 2),
+262:                 target,
+263:                 f"{round(balance, 2)} Hours Remaining" if balance else "0",
+264:                 f"{kpi_pct}%",
+265:                 TeamAnalyticsService.compliance_status(kpi_pct),
+266:                 department,
+267:                 manager,
+268:                 f"{attendance_pct:.1f}%",
+269:             ])
+270:             ws.append(row_values)
+271:             compliance_fill = green if kpi_pct >= 75 else yellow if kpi_pct >= 25 else red
+272:             for c in range(1, total_cols + 1):
+273:                 fill = compliance_fill if c in (total_cols - 3, total_cols - 4) else white
+274:                 style_cell(ws.cell(row_idx, c), fill=fill, align="left" if c in (3, 5) or c > 4 and (c - 5) % 3 == 0 else "center")
+275: 
+276:             stats = dept_stats.setdefault(department, {
+277:                 "employees": 0, "hours": 0.0, "below": 0, "achieved": 0,
+278:                 "top_name": "", "top_hours": -1.0, "attendance_rows": 0,
+279:             })
+280:             stats["employees"] += 1
+281:             stats["hours"] += total_hours
+282:             stats["attendance_rows"] += total_attendance_rows
+283:             if total_hours < target:
+284:                 stats["below"] += 1
+285:             if total_hours >= target:
+286:                 stats["achieved"] += 1
+287:             if total_hours > stats["top_hours"]:
+288:                 stats["top_hours"] = total_hours
+289:                 stats["top_name"] = f"{emp.first_name} {emp.last_name}"
+290: 
+291:         widths = [8, 14, 24, 16]
+292:         widths.extend([28, 12, 12] * len(months))
+293:         widths.extend([12, 12, 18, 10, 20, 18, 22, 14])
+294:         for i, width in enumerate(widths, 1):
+295:             ws.column_dimensions[get_column_letter(i)].width = width
+296:         for row in range(1, ws.max_row + 1):
+297:             ws.row_dimensions[row].height = 36 if row >= 6 else 24
+298:         ws.auto_filter.ref = f"A5:{get_column_letter(total_cols)}{ws.max_row}"
+299: 
+300:         dept_ws = wb.create_sheet("Department KPI Analytics")
+301:         dept_headers = ["Department", "Total Employees", "Total Learning Hours", "Avg Learning Hours", "Completion %", "Employees Below Target", "Top Learners", "Attendance %", "KPI Score"]
+302:         dept_ws.append(dept_headers)
+303:         for c in range(1, len(dept_headers) + 1):
+304:             style_cell(dept_ws.cell(1, c), fill=blue, font_color=white, bold=True)
+305:         for department, stats in sorted(dept_stats.items()):
+306:             completion = round((stats["achieved"] / stats["employees"]) * 100, 1) if stats["employees"] else 0
+307:             avg_hours = round(stats["hours"] / stats["employees"], 2) if stats["employees"] else 0
+308:             kpi_score = round((avg_hours / TeamAnalyticsService.LEARNING_TARGET_HOURS) * 100, 1) if TeamAnalyticsService.LEARNING_TARGET_HOURS else 0
+309:             dept_ws.append([
+310:                 department,
+311:                 stats["employees"],
+312:                 round(stats["hours"], 2),
+313:                 avg_hours,
+314:                 f"{completion}%",
+315:                 stats["below"],
+316:                 stats["top_name"],
+317:                 "100.0%" if stats["attendance_rows"] else "0.0%",
+318:                 f"{kpi_score}%",
+319:             ])
+320:         for row in dept_ws.iter_rows():
+321:             for cell in row:
+322:                 style_cell(cell, fill=cell.fill.fgColor.rgb[-6:] if cell.row == 1 else white, font_color=white if cell.row == 1 else "1F2937", bold=cell.row == 1)
+323:         for i, width in enumerate([24, 16, 20, 18, 16, 22, 24, 14, 14], 1):
+324:             dept_ws.column_dimensions[get_column_letter(i)].width = width
+325: 
+326:         month_ws = wb.create_sheet("Monthly Learning Summary")
+327:         month_ws.append(["Month", "Financial Year", "Total Learning Hours", "Active Learners", "Training Programs", "Monthly KPI Contribution"])
+328:         for c in range(1, 7):
+329:             style_cell(month_ws.cell(1, c), fill=blue, font_color=white, bold=True)
+330:         for y, m, name in months:
+331:             stats = monthly_stats[(y, m)]
+332:             month_ws.append([name, fy_label, round(stats["hours"], 2), len(stats["employees"]), len(stats["trainings"]), f"{round((stats['hours'] / max(1, len(employee_ids) * TeamAnalyticsService.LEARNING_TARGET_HOURS)) * 100, 1)}%"])
+333:         for row in month_ws.iter_rows(min_row=2):
+334:             for cell in row:
+335:                 style_cell(cell)
+336:         for i, width in enumerate([16, 16, 22, 16, 18, 24], 1):
+337:             month_ws.column_dimensions[get_column_letter(i)].width = width
+338: 
+339:         att_ws = wb.create_sheet("Training Attendance Summary")
+340:         att_headers = ["Employee ID", "Employee Name", "Department", "Manager", "Training Date", "Training Name", "Category", "Attendance Status", "Actual Hours", "Max Hours"]
+341:         att_ws.append(att_headers)
+342:         for c in range(1, len(att_headers) + 1):
+343:             style_cell(att_ws.cell(1, c), fill=blue, font_color=white, bold=True)
+344:         for item in attendance_rows:
+345:             att_ws.append([
+346:                 item["employee_code"],
+347:                 item["employee_name"],
+348:                 item["department"],
+349:                 item["manager"],
+350:                 item["training_date"].strftime("%d-%b-%Y"),
+351:                 item["training_title"],
+352:                 item["category"],
+353:                 item["status"],
+354:                 item["hours"],
+355:                 item["max_hours"],
+356:             ])
+357:         for row in att_ws.iter_rows(min_row=2):
+358:             for cell in row:
+359:                 style_cell(cell, align="left")
+360:         for i, width in enumerate([14, 24, 18, 22, 16, 32, 18, 18, 14, 12], 1):
+361:             att_ws.column_dimensions[get_column_letter(i)].width = width
+362: 
+363:         output = io.BytesIO()
+364:         wb.save(output)
+365:         output.seek(0)
+366:         return output.getvalue()
+367: 
+368:     @staticmethod
+369:     async def get_team_dashboard(db: AsyncSession) -> TeamAnalyticsDashboard:
+370:         # ── Departments ────────────────────────────────────────────────────────
+371:         depts_res = (await db.execute(
+372:             select(Department).where(Department.deleted_at == None)
+373:         )).scalars().all()
+374:         dept_map = {d.id: d.name for d in depts_res}
+375: 
+376:         # ── Total learning hours (completed enrollments) ────────────────────
+377:         total_hours_res = (await db.execute(
+378:             select(func.coalesce(func.sum(Training.duration_hours), 0.0))
+379:             .join(Enrollment, Enrollment.training_id == Training.id)
+380:             .where(and_(
+381:                 Enrollment.status == EnrollmentStatus.COMPLETED,
+382:                 Enrollment.deleted_at == None,
+383:             ))
+384:         )).scalar() or 0.0
+385: 
+386:         # ── Total enrollments & completions ────────────────────────────────
+387:         total_enr = (await db.execute(
+388:             select(func.count(Enrollment.id))
+389:             .where(Enrollment.deleted_at == None)
+390:         )).scalar() or 0
+391: 
+392:         total_comp = (await db.execute(
+393:             select(func.count(Enrollment.id))
+394:             .where(and_(
+395:                 Enrollment.status == EnrollmentStatus.COMPLETED,
+396:                 Enrollment.deleted_at == None,
+397:             ))
+398:         )).scalar() or 0
+399: 
+400:         completion_rate = round((total_comp / total_enr * 100) if total_enr else 0.0, 1)
+401: 
+402:         # ── Active learners (employees with at least one APPROVED enrollment) ─
+403:         active_learners = (await db.execute(
+404:             select(func.count(func.distinct(Enrollment.employee_id)))
+405:             .where(and_(
+406:                 Enrollment.status == EnrollmentStatus.APPROVED,
+407:                 Enrollment.deleted_at == None,
+408:             ))
+409:         )).scalar() or 0
+410: 
+411:         # ── Total active employees ─────────────────────────────────────────
+412:         total_emp = (await db.execute(
+413:             select(func.count(Employee.id)).where(Employee.deleted_at == None)
+414:         )).scalar() or 1  # avoid div/0
+415: 
+416:         avg_hours = round(total_hours_res / total_emp, 1) if total_emp else 0.0
+417: 
+418:         # ── Department-level hours ─────────────────────────────────────────
+419:         dept_hours_stmt = (
+420:             select(
+421:                 Employee.department_id,
+422:                 func.coalesce(func.sum(Training.duration_hours), 0.0).label("hours"),
+423:                 func.count(func.distinct(Enrollment.employee_id)).label("learners"),
+424:                 func.count(Enrollment.id).label("total_enr"),
+425:                 func.sum(case((Enrollment.status == EnrollmentStatus.COMPLETED, 1), else_=0)).label("comp"),
+426:             )
+427:             .join(Enrollment, Enrollment.employee_id == Employee.id)
+428:             .join(Training, Training.id == Enrollment.training_id)
+429:             .where(and_(
+430:                 Employee.deleted_at == None,
+431:                 Enrollment.deleted_at == None,
+432:             ))
+433:             .group_by(Employee.department_id)
+434:         )
+435:         dept_hours_raw = (await db.execute(dept_hours_stmt)).all()
+436: 
+437:         dept_learning_hours: List[DeptLearningHours] = []
+438:         top_dept_name = "N/A"
+439:         top_dept_hours = -1.0
+440: 
+441:         for r in dept_hours_raw:
+442:             dname = dept_map.get(r.department_id, "Unknown")
+443:             rate = round((r.comp / r.total_enr * 100) if r.total_enr else 0.0, 1)
+444:             dept_learning_hours.append(DeptLearningHours(
+445:                 department=dname,
+446:                 hours=round(float(r.hours), 1),
+447:                 employees=r.learners,
+448:                 completion_rate=rate,
+449:             ))
+450:             if float(r.hours) > top_dept_hours:
+451:                 top_dept_hours = float(r.hours)
+452:                 top_dept_name = dname
+453: 
+454:         # ── Monthly trends (last 6 months) ────────────────────────────────
+455:         now = datetime.now()
+456:         monthly_trends: List[MonthlyLearningTrend] = []
+457:         for i in range(5, -1, -1):
+458:             m = (now.month - i - 1) % 12 + 1
+459:             y = now.year + (now.month - i - 1) // 12
+460:             start = date(y, m, 1)
+461:             end = date(y, m + 1, 1) if m < 12 else date(y + 1, 1, 1)
+462:             month_label = date(y, m, 1).strftime("%b")
+463: 
+464:             m_enr = (await db.execute(
+465:                 select(func.count(Enrollment.id))
+466:                 .where(and_(
+467:                     Enrollment.created_at >= datetime.combine(start, datetime.min.time()),
+468:                     Enrollment.created_at < datetime.combine(end, datetime.min.time()),
+469:                     Enrollment.deleted_at == None,
+470:                 ))
+471:             )).scalar() or 0
+472: 
+473:             m_comp = (await db.execute(
+474:                 select(func.count(Enrollment.id))
+475:                 .where(and_(
+476:                     Enrollment.created_at >= datetime.combine(start, datetime.min.time()),
+477:                     Enrollment.created_at < datetime.combine(end, datetime.min.time()),
+478:                     Enrollment.status == EnrollmentStatus.COMPLETED,
+479:                     Enrollment.deleted_at == None,
+480:                 ))
+481:             )).scalar() or 0
+482: 
+483:             m_hours = (await db.execute(
+484:                 select(func.coalesce(func.sum(Training.duration_hours), 0.0))
+485:                 .join(Enrollment, Enrollment.training_id == Training.id)
+486:                 .where(and_(
+487:                     Enrollment.created_at >= datetime.combine(start, datetime.min.time()),
+488:                     Enrollment.created_at < datetime.combine(end, datetime.min.time()),
+489:                     Enrollment.status == EnrollmentStatus.COMPLETED,
+490:                     Enrollment.deleted_at == None,
+491:                 ))
+492:             )).scalar() or 0.0
+493: 
+494:             monthly_trends.append(MonthlyLearningTrend(
+495:                 month=month_label,
+496:                 hours=round(float(m_hours), 1),
+497:                 enrollments=m_enr,
+498:                 completions=m_comp,
+499:             ))
+500: 
+501:         # ── Top courses by participation ───────────────────────────────────
+502:         course_stmt = (
+503:             select(
+504:                 Training.title,
+505:                 func.count(Enrollment.id).label("participants"),
+506:                 func.sum(case((Enrollment.status == EnrollmentStatus.COMPLETED, 1), else_=0)).label("completions"),
+507:                 func.count(Enrollment.id).label("total"),
+508:             )
+509:             .join(Enrollment, Enrollment.training_id == Training.id)
+510:             .where(Enrollment.deleted_at == None)
+511:             .group_by(Training.title)
+512:             .order_by(func.count(Enrollment.id).desc())
+513:             .limit(8)
+514:         )
+515:         course_raw = (await db.execute(course_stmt)).all()
+516:         course_participation: List[CourseParticipation] = [
+517:             CourseParticipation(
+518:                 course=r.title,
+519:                 participants=r.participants,
+520:                 completion_rate=round((r.completions / r.total * 100) if r.total else 0.0, 1),
+521:             )
+522:             for r in course_raw
+523:         ]
+524: 
+525:         # ── Skills gap (from training skills_covered field) ────────────────
+526:         skills_stmt = (
+527:             select(Training.skills_covered, func.avg(Enrollment.progress).label("avg_prog"))
+528:             .join(Enrollment, Enrollment.training_id == Training.id)
+529:             .where(and_(
+530:                 Training.skills_covered != None,
+531:                 Enrollment.deleted_at == None,
+532:             ))
+533:             .group_by(Training.skills_covered)
+534:         )
+535:         skills_raw = (await db.execute(skills_stmt)).all()
+536:         skills_map: dict = {}
+537:         for r in skills_raw:
+538:             if not r.skills_covered:
+539:                 continue
+540:             prog = float(r.avg_prog or 0)
+541:             for s in r.skills_covered.split(","):
+542:                 s = s.strip()
+543:                 if not s:
+544:                     continue
+545:                 if s not in skills_map:
+546:                     skills_map[s] = []
+547:                 skills_map[s].append(prog)
+548: 
+549:         skill_gaps: List[SkillGapItem] = []
+550:         for skill, progs in list(skills_map.items())[:7]:
+551:             current = round(sum(progs) / len(progs), 1) if progs else 0.0
+552:             target = min(100.0, current + 20.0)
+553:             skill_gaps.append(SkillGapItem(skill=skill, current=current, target=target))
+554: 
+555:         # Fallback skills if none in DB
+556:         if not skill_gaps:
+557:             defaults = [
+558:                 ("Leadership", 60, 85), ("Communication", 72, 90),
+559:                 ("Technical Skills", 55, 80), ("Data Analysis", 40, 75),
+560:                 ("Project Management", 65, 85),
+561:             ]
+562:             skill_gaps = [SkillGapItem(skill=s, current=c, target=t) for s, c, t in defaults]
+563: 
+564:         # ── Effectiveness scores per department ────────────────────────────
+565:         eff_stmt = (
+566:             select(
+567:                 Employee.department_id,
+568:                 func.avg(Effectiveness.score).label("avg_score"),
+569:             )
+570:             .join(Enrollment, Effectiveness.enrollment_id == Enrollment.id)
+571:             .join(Employee, Enrollment.employee_id == Employee.id)
+572:             .where(and_(
+573:                 Effectiveness.deleted_at == None,
+574:                 Effectiveness.score != None,
+575:             ))
+576:             .group_by(Employee.department_id)
+577:         )
+578:         eff_raw = (await db.execute(eff_stmt)).all()
+579:         effectiveness_scores: List[EffectivenessScore] = [
+580:             EffectivenessScore(
+581:                 department=dept_map.get(r.department_id, "Unknown"),
+582:                 score=round(float(r.avg_score or 0) * 20, 1),  # scale 0-5 → 0-100
+583:             )
+584:             for r in eff_raw
+585:         ]
+586: 
+587:         # ── Department summaries ───────────────────────────────────────────
+588:         department_summaries: List[DepartmentSummary] = []
+589:         for dept in depts_res:
+590:             # Employee count in dept
+591:             dept_emp_count = (await db.execute(
+592:                 select(func.count(Employee.id))
+593:                 .where(and_(Employee.department_id == dept.id, Employee.deleted_at == None))
+594:             )).scalar() or 0
+595: 
+596:             if dept_emp_count == 0:
+597:                 continue
+598: 
+599:             dept_emp_ids_stmt = select(Employee.id).where(and_(
+600:                 Employee.department_id == dept.id, Employee.deleted_at == None
+601:             ))
+602: 
+603:             # Total hours for dept
+604:             d_hours = (await db.execute(
+605:                 select(func.coalesce(func.sum(Training.duration_hours), 0.0))
+606:                 .join(Enrollment, Enrollment.training_id == Training.id)
+607:                 .where(and_(
+608:                     Enrollment.employee_id.in_(dept_emp_ids_stmt),
+609:                     Enrollment.status == EnrollmentStatus.COMPLETED,
+610:                     Enrollment.deleted_at == None,
+611:                 ))
+612:             )).scalar() or 0.0
+613: 
+614:             # Completion %
+615:             d_total_enr = (await db.execute(
+616:                 select(func.count(Enrollment.id))
+617:                 .where(and_(
+618:                     Enrollment.employee_id.in_(dept_emp_ids_stmt),
+619:                     Enrollment.deleted_at == None,
+620:                 ))
+621:             )).scalar() or 0
+622:             d_comp = (await db.execute(
+623:                 select(func.count(Enrollment.id))
+624:                 .where(and_(
+625:                     Enrollment.employee_id.in_(dept_emp_ids_stmt),
+626:                     Enrollment.status == EnrollmentStatus.COMPLETED,
+627:                     Enrollment.deleted_at == None,
+628:                 ))
+629:             )).scalar() or 0
+630:             d_rate = round((d_comp / d_total_enr * 100) if d_total_enr else 0.0, 1)
+631: 
+632:             # Active enrollments
+633:             d_active = (await db.execute(
+634:                 select(func.count(Enrollment.id))
+635:                 .where(and_(
+636:                     Enrollment.employee_id.in_(dept_emp_ids_stmt),
+637:                     Enrollment.status == EnrollmentStatus.APPROVED,
+638:                     Enrollment.deleted_at == None,
+639:                 ))
+640:             )).scalar() or 0
+641: 
+642:             # Pending evaluations
+643:             d_pending_eff = (await db.execute(
+644:                 select(func.count(Effectiveness.id))
+645:                 .join(Enrollment, Effectiveness.enrollment_id == Enrollment.id)
+646:                 .where(and_(
+647:                     Enrollment.employee_id.in_(dept_emp_ids_stmt),
+648:                     Effectiveness.status == EffectivenessStatus.SUBMITTED,
+649:                     Effectiveness.deleted_at == None,
+650:                 ))
+651:             )).scalar() or 0
+652: 
+653:             # Top learner (most hours)
+654:             top_learner_stmt = (
+655:                 select(
+656:                     Employee.first_name, Employee.last_name,
+657:                     func.coalesce(func.sum(Training.duration_hours), 0.0).label("hrs"),
+658:                 )
+659:                 .join(Enrollment, Enrollment.employee_id == Employee.id)
+660:                 .join(Training, Training.id == Enrollment.training_id)
+661:                 .where(and_(
+662:                     Employee.department_id == dept.id,
+663:                     Employee.deleted_at == None,
+664:                     Enrollment.status == EnrollmentStatus.COMPLETED,
+665:                     Enrollment.deleted_at == None,
+666:                 ))
+667:                 .group_by(Employee.id, Employee.first_name, Employee.last_name)
+668:                 .order_by(func.sum(Training.duration_hours).desc())
+669:                 .limit(1)
+670:             )
+671:             top_res = (await db.execute(top_learner_stmt)).one_or_none()
+672:             top_learner_name = f"{top_res.first_name} {top_res.last_name}" if top_res else "—"
+673: 
+674:             department_summaries.append(DepartmentSummary(
+675:                 department=dept.name,
+676:                 top_learner=top_learner_name,
+677:                 total_hours=round(float(d_hours), 1),
+678:                 completion_pct=d_rate,
+679:                 active_enrollments=d_active,
+680:                 pending_evaluations=d_pending_eff,
+681:                 employee_count=dept_emp_count,
+682:             ))
+683: 
+684:         # ── Employee analytics table ───────────────────────────────────────
+685:         comp_case = case((Enrollment.status == EnrollmentStatus.COMPLETED, 1), else_=0)
+686:         hours_case = case((Enrollment.status == EnrollmentStatus.COMPLETED, Training.duration_hours), else_=0.0)
+687: 
+688:         emp_analytics_stmt = (
+689:             select(
+690:                 Employee,
+691:                 func.coalesce(func.sum(hours_case), 0.0).label("total_hours"),
+692:                 func.sum(comp_case).label("completed"),
+693:                 func.count(Enrollment.id).label("total_enr"),
+694:                 func.avg(Effectiveness.score).label("eff_score"),
+695:                 func.max(Enrollment.updated_at).label("last_active"),
+696:             )
+697:             .outerjoin(Enrollment, and_(
+698:                 Enrollment.employee_id == Employee.id,
+699:                 Enrollment.deleted_at == None,
+700:             ))
+701:             .outerjoin(Training, Training.id == Enrollment.training_id)
+702:             .outerjoin(Effectiveness, and_(
+703:                 Effectiveness.enrollment_id == Enrollment.id,
+704:                 Effectiveness.deleted_at == None,
+705:             ))
+706:             .options(selectinload(Employee.department))
+707:             .where(Employee.deleted_at == None)
+708:             .group_by(Employee.id)
+709:             .order_by(func.sum(hours_case).desc().nullslast())
+710:             .limit(50)
+711:         )
+712:         emp_raw = (await db.execute(emp_analytics_stmt)).all()
+713: 
+714:         employee_table: List[EmployeeAnalyticsRow] = []
+715:         for r in emp_raw:
+716:             emp = r.Employee
+717:             total_enr_v = r.total_enr or 0
+718:             comp_v = r.completed or 0
+719:             comp_pct = round((comp_v / total_enr_v * 100) if total_enr_v else 0.0, 1)
+720:             eff = round(float(r.eff_score or 0) * 20, 1)  # 0-5 → 0-100
+721:             last_active = r.last_active.strftime("%Y-%m-%d") if r.last_active else None
+722:             employee_table.append(EmployeeAnalyticsRow(
+723:                 id=str(emp.id),
+724:                 name=f"{emp.first_name} {emp.last_name}",
+725:                 department=emp.department.name if emp.department else "N/A",
+726:                 total_hours=round(float(r.total_hours), 1),
+727:                 trainings_completed=comp_v,
+728:                 completion_pct=comp_pct,
+729:                 effectiveness_score=eff,
+730:                 last_active=last_active,
+731:             ))
+732: 
+733:         # ── Top learners ───────────────────────────────────────────────────
+734:         top_learners_stmt = (
+735:             select(
+736:                 Employee,
+737:                 func.coalesce(func.sum(Training.duration_hours), 0.0).label("hrs"),
+738:                 func.count(Enrollment.id).label("completions"),
+739:             )
+740:             .join(Enrollment, and_(
+741:                 Enrollment.employee_id == Employee.id,
+742:                 Enrollment.status == EnrollmentStatus.COMPLETED,
+743:                 Enrollment.deleted_at == None,
+744:             ))
+745:             .join(Training, Training.id == Enrollment.training_id)
+746:             .options(selectinload(Employee.department))
+747:             .where(Employee.deleted_at == None)
+748:             .group_by(Employee.id)
+749:             .order_by(func.sum(Training.duration_hours).desc())
+750:             .limit(10)
+751:         )
+752:         top_raw = (await db.execute(top_learners_stmt)).all()
+753:         top_learners_company: List[TopLearner] = [
+754:             TopLearner(
+755:                 rank=idx + 1,
+756:                 id=str(r.Employee.id),
+757:                 name=f"{r.Employee.first_name} {r.Employee.last_name}",
+758:                 department=r.Employee.department.name if r.Employee.department else "N/A",
+759:                 hours=round(float(r.hrs), 1),
+760:                 completions=r.completions,
+761:                 avatar_initials=(
+762:                     (r.Employee.first_name or "?")[0].upper() +
+763:                     (r.Employee.last_name or "?")[0].upper()
+764:                 ),
+765:             )
+766:             for idx, r in enumerate(top_raw)
+767:         ]
+768: 
+769:         kpis = TeamKPIs(
+770:             total_learning_hours=round(float(total_hours_res), 1),
+771:             completion_rate=completion_rate,
+772:             active_learners=active_learners,
+773:             top_performing_department=top_dept_name,
+774:             avg_hours_per_employee=avg_hours,
+775:             total_employees=total_emp,
+776:             total_enrollments=total_enr,
+777:             total_completed=total_comp,
+778:         )
+779: 
+780:         return TeamAnalyticsDashboard(
+781:             kpis=kpis,
+782:             dept_learning_hours=dept_learning_hours,
+783:             monthly_trends=monthly_trends,
+784:             course_participation=course_participation,
+785:             skill_gaps=skill_gaps,
+786:             effectiveness_scores=effectiveness_scores,
+787:             department_summaries=department_summaries,
+788:             employee_table=employee_table,
+789:             top_learners_company=top_learners_company,
+790:         )
+791: 
+The above content shows the entire, complete file contents of the requested file.

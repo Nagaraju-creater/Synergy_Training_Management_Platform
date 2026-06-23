@@ -1,0 +1,17 @@
+backend/app\attendance\router.py:274: def get_roster_token(link_token: str) -> str:
+backend/app\attendance\router.py:283: @router.get("/session-link/{session_id_or_slug}")
+backend/app\attendance\router.py:284: async def get_public_session_link_details(
+backend/app\attendance\router.py:288: token = get_roster_token(session_id_or_slug)
+backend/app\attendance\router.py:363: @router.post("/session-link/{session_id_or_slug}/submit")
+backend/app\attendance\router.py:370: token = get_roster_token(session_id_or_slug)
+frontend/src\App.tsx:133: <Route path="/attendance-roster/:token" element={<AttendanceRosterPage />} />
+frontend/src\app\trainings\index.tsx:495: const link = `${window.location.origin}/attendance-roster/${slug}-${session.secure_token}`;
+frontend/src\app\trainings\details\index.tsx:161: const link = `${window.location.origin}/attendance-roster/${slug}-${session.secure_token}`;
+frontend/src\app\trainings\details\index.tsx:186: setAttendanceLink(`${window.location.origin}/attendance-roster/${slug}-${attendanceSession.secure_token}`);
+frontend/src\app\trainings\details\index.tsx:269: const activeLink = attendanceLink || (attendanceSession?.secure_token ? `${window.location.origin}/attendance-roster/${(attendanceSession.training_slug || 'session')}-${attendanceSession.secure_token}` : null);
+frontend/src\app\trainings\details\index.tsx:662: value={attendanceSession.secure_token ? `${window.location.origin}/attendance-roster/${attendanceSession.training_slug || 'session'}-${attendanceSession.secure_token}` : ""}
+frontend/src\app\trainings\details\index.tsx:669: const link = attendanceSession.secure_token ? `${window.location.origin}/attendance-roster/${attendanceSession.training_slug || 'session'}-${attendanceSession.secure_token}` : "";
+frontend/src\app\trainings\details\index.tsx:678: onClick={() => attendanceSession.secure_token && window.open(`/attendance-roster/${attendanceSession.training_slug || 'session'}-${attendanceSession.secure_token}`, "_blank")}
+frontend/src\lib\axios.ts:59: const publicPaths = ["/login", "/forgot-password", "/auth/reset-password", "/attendance-roster"];
+frontend/src\services\attendance.service.ts:54: api.get(`/attendance/session-link/${sessionId}`),
+frontend/src\services\attendance.service.ts:60: api.post(`/attendance/session-link/${sessionId}/submit`, data),

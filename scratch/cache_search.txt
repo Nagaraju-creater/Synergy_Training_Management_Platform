@@ -1,0 +1,32 @@
+backend/app\config.py:30: # ── Redis ──────────────────────────────────────────────────────────────────
+backend/app\config.py:31: REDIS_URL: str = "redis://127.0.0.1:6379/0"
+backend/app\config.py:34: CELERY_BROKER_URL: str = "redis://127.0.0.1:6379/1"
+backend/app\config.py:35: CELERY_RESULT_BACKEND: str = "redis://127.0.0.1:6379/2"
+backend/app\main.py:205: import redis.asyncio as aioredis
+backend/app\main.py:215: redis_status = "ok"
+backend/app\main.py:217: r = aioredis.from_url(settings.REDIS_URL, socket_timeout=2.0)
+backend/app\main.py:221: redis_status = f"unhealthy: {str(e)}"
+backend/app\main.py:223: if db_status != "ok" or redis_status != "ok":
+backend/app\main.py:229: "redis": redis_status
+backend/app\main.py:236: "redis": redis_status
+backend/app\auth\service.py:19: # In-memory store for development (since Redis is unavailable)
+backend/app\core\config.py:13: REDIS_URL: str
+backend/app\enrollments\service.py:261: # No Celery call needed here (avoids ModuleNotFoundError when Redis unavailable).
+backend/app\services\redis_client.py:3: import redis.asyncio as aioredis
+backend/app\services\redis_client.py:7: _redis: Optional[aioredis.Redis] = None
+backend/app\services\redis_client.py:10: async def get_redis() -> aioredis.Redis:
+backend/app\services\redis_client.py:11: """Return a shared async Redis connection pool."""
+backend/app\services\redis_client.py:12: global _redis
+backend/app\services\redis_client.py:13: if _redis is None:
+backend/app\services\redis_client.py:14: _redis = aioredis.from_url(
+backend/app\services\redis_client.py:15: settings.REDIS_URL,
+backend/app\services\redis_client.py:19: return _redis
+backend/app\services\redis_client.py:22: async def close_redis() -> None:
+backend/app\services\redis_client.py:23: global _redis
+backend/app\services\redis_client.py:24: if _redis:
+backend/app\services\redis_client.py:25: await _redis.close()
+backend/app\services\redis_client.py:26: _redis = None
+backend/app\trainings\master_import_service.py:293: # Cache reference lists to reduce DB calls
+backend/app\training_plans\service.py:143: # Query department name if not already cached
+backend/app\utils\limiter.py:5: # Use in-memory storage so rate limiting works without Redis in development.
+backend/app\utils\limiter.py:6: # In production, swap MemoryStorage() for RedisStorage(redis_url) for distributed limiting.

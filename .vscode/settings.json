@@ -1,0 +1,8 @@
+{
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}/backend"
+  ],
+  "eslint.workingDirectories": [
+    "./frontend"
+  ]
+}

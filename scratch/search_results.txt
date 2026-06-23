@@ -1,0 +1,54 @@
+Found 53 matches:
+README.md:41: - Frontend: http://localhost
+README.md:42: - API docs: http://localhost/docs
+backend\.env:7: DATABASE_URL=postgresql+asyncpg://postgres:Postgres%40123@localhost:5432/training_db
+backend\.env:21: ALLOWED_ORIGINS=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000", "https://47caf8c1ffdcdc.lhr.life"]
+backend\.env.example:5: FRONTEND_URL="http://localhost:5173"
+backend\.env.example:8: DATABASE_URL=postgresql+asyncpg://postgres:password@localhost:5432/training_db
+backend\.env.example:18: REDIS_URL=redis://localhost:6379/0
+backend\.env.example:21: CELERY_BROKER_URL=redis://localhost:6379/1
+backend\.env.example:22: CELERY_RESULT_BACKEND=redis://localhost:6379/2
+backend\.env.example:26: ALLOWED_ORIGINS='["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000"]'
+backend\alembic.ini:5: sqlalchemy.url = postgresql+asyncpg://user:password@localhost:5432/training_db
+backend\alter_db.py:6: engine = create_async_engine('postgresql+asyncpg://postgres:Postgres%40123@localhost:5432/training_db')
+backend\alter_db_effectiveness.py:17: DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/training_platform")
+backend\check_db.py:6: engine = create_async_engine('postgresql+asyncpg://postgres:postgres@localhost:5432/synergy_trainings')
+backend\check_db2.py:6: engine = create_async_engine('postgresql+asyncpg://postgres:postgres@localhost:5432/synergy_trainings')
+backend\check_db4.py:6: engine = create_async_engine('postgresql+asyncpg://postgres:Postgres%40123@localhost:5432/training_db')
+backend\check_db5.py:6: engine = create_async_engine('postgresql+asyncpg://postgres:Postgres%40123@localhost:5432/training_db')
+backend\check_db6.py:6: engine = create_async_engine('postgresql+asyncpg://postgres:Postgres%40123@localhost:5432/training_db')
+backend\create_db.py:9: host='localhost',
+backend\enrollment_email_preview.html:210: <a href="http://localhost:5173/trainings/8f92b7c4-5d9e-4b6e-af6f-667a100819fe" class="btn-hover" style="display: inline-block; padding: 14px 28px; background-color: #4f46e5; color: #ffffff; text-decoration: none; border-radius: 6px; font-size: 15px; font-weight: 700; box-shadow: 0 4px 6px rgba(79, 70, 229, 0.15); transition: background-color 0.2s ease-in-out;">
+backend\test_api.py:7: # Assuming the server is running on localhost:8000
+backend\test_api.py:11: response = await client.get("http://localhost:8000/api/v1/employees/")
+backend\test_api_public.py:20: test_url('http://localhost:8000/api/v1/attendance/session-link/F0TXHE')
+backend\test_api_public.py:21: test_url('http://localhost:8000/api/v1/attendance/session-link/some-slug-name-F0TXHE')
+backend\test_db_conn.py:7: conn = await asyncpg.connect("postgresql://postgres:Postgres%40123@localhost:5432/training_db")
+backend\test_login.py:6: url = "http://localhost:8000/api/v1/auth/login"
+backend\test_nominate.py:6: url = "http://localhost:8000/api/v1/auth/login"
+backend\test_nominate.py:22: nom_url = "http://localhost:8000/api/v1/nominations"
+backend\test_nominate.py:30: train_url = "http://localhost:8000/api/v1/trainings"
+backend\update_db.py:6: engine = create_async_engine('postgresql+asyncpg://postgres:Postgres%40123@localhost:5432/training_db')
+backend\verify_enrollment_email.py:22: action_url="http://localhost:5173/trainings/8f92b7c4-5d9e-4b6e-af6f-667a100819fe",
+backend\app\config.py:13: FRONTEND_URL: str = "http://localhost:5173"
+backend\app\config.py:39: "http://localhost:5173",
+backend\app\config.py:41: "http://localhost:3000",
+backend\app\config.py:42: "http://localhost:80",
+backend\app\auth\router.py:147: reset_url = f"http://localhost:5173/auth/reset-password?token={token}"
+backend\app\effectiveness\service.py:152: else "http://localhost:5173"
+backend\app\effectiveness\tasks.py:66: else "http://localhost:5173"
+backend\app\enrollments\service.py:193: frontend_url = settings.ALLOWED_ORIGINS[0] if settings.ALLOWED_ORIGINS else "http://localhost:5173"
+frontend\.env:1: VITE_API_URL=http://localhost:8000
+frontend\.env.example:1: VITE_API_BASE_URL=http://localhost:8000/api/v1
+frontend\nginx.conf:16: server_name localhost;
+frontend\vite.config.ts:16: target: "http://localhost:8000",
+frontend\src\app\effectiveness\EffectivenessReview.tsx:262: <img src={`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/${signatureUrl}`} alt="Signature" className="max-h-full object-contain grayscale hover:grayscale-0 transition-all" />
+frontend\src\app\effectiveness\index.tsx:604: src={`${import.meta.env.VITE_API_BASE_URL || "http://localhost:8000"}/${selectedEvaluation.digital_signature_url}`}
+frontend\src\app\elearning\details.tsx:35: const apiBase = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api/v1";
+frontend\src\app\employees\index.tsx:222: <img src={r.profile_image_url.startsWith("blob:") ? r.profile_image_url : `${import.meta.env.VITE_API_BASE_URL || "http://localhost:8000"}${r.profile_image_url}`} alt={r.first_name} className="w-full h-full object-cover" />
+frontend\src\app\employees\components\EmployeeDetailDrawer.tsx:42: <img src={employee.profile_image_url.startsWith("blob:") ? employee.profile_image_url : `${import.meta.env.VITE_API_BASE_URL || "http://localhost:8000"}${employee.profile_image_url}`} alt={employee.first_name} className="w-full h-full object-cover" />
+frontend\src\app\employees\components\EmployeeDrawer.tsx:196: <img src={avatarPreview.startsWith("blob:") ? avatarPreview : `${import.meta.env.VITE_API_BASE_URL || "http://localhost:8000"}${avatarPreview}`} alt="Avatar" className="w-full h-full object-cover" />
+frontend\src\app\profile\index.tsx:177: src={user.avatar_url.startsWith('http') ? user.avatar_url : `${(import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api/v1').replace('/api/v1', '')}${user.avatar_url}`}
+frontend\src\app\settings\index.tsx:240: {import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api/v1"}
+frontend\src\app\trainings\details\index.tsx:714: <Button variant="ghost" size="icon" className="h-8 w-8 rounded-lg" onClick={() => window.open(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/${doc.file_path}`, '_blank')}>
+frontend\src\lib\axios.ts:5: baseURL: import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api/v1",
